@@ -1,36 +1,124 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ele-web
 
-## Getting Started
+Sitio web para el restablecimiento de contraseñas de la plataforma **ELE Chaco**
+escalable y _self-service_: el usuario ingresa su DNI (usuario) y el correo con
+el que se registró, y el sitio resetea su contraseña a su DNI.
 
-First, run the development server:
+Es la contraparte web de `ele-cli` (el comando `user reset-pass`), pero con un
+mecanismo de verificación extra: el correo debe coincidir con el registrado en
+Moodle.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Stack
+
+- Next.js 16 (App Router + Route Handlers) sobre Node.js
+- Tailwind CSS 4
+- Desplegado en Vercel (serverless)
+
+## Cómo funciona
+
+1. El usuario envía `DNI` + `email` desde el formulario.
+2. El navegador hace `POST /api/reset` — NUNCA habla directo con Moodle.
+3. El Route Handler (corre en el servidor de Vercel, no en el navegador):
+   - valida el formato del DNI y del correo;
+   - consulta `core_user_get_users_by_field` con el token;
+   - si el correo coincide (case-insensitive) con el registrado, resetea la
+     contraseña a su DNI mediante `core_user_update_users`;
+   - devuelve mensajes genéricos para no revelar si un DNI está registrado.
+4. Si coincide, la contraseña queda igual al DNI (usuario), igual que `ele-cli`.
+
+## Requisitos
+
+- Node.js 20.9+ (Next.js 16)
+- Un token de Web Services del Moodle con permiso sobre:
+  - `core_user_get_users_by_field`
+  - `core_user_update_users`
+
+## Configuración local
+
+```sh
+npm install
+cp .env.example .env.local   # en Windows: Copy-Item .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Completar `.env.local`:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```dotenv
+MOODLE_URL=https://ele.chaco.gob.ar
+MOODLE_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+> ⚠️ `.env.local` está en `.gitignore`: nunca se commitea. Solo se commitea
+> `.env.example` (sin valores reales).
 
-## Learn More
+## Desarrollo
 
-To learn more about Next.js, take a look at the following resources:
+```sh
+npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Abrir [http://localhost:3000](http://localhost:3000).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Verificación antes de desplegar
 
-## Deploy on Vercel
+```sh
+npm run lint    # ESLint
+npx tsc --noEmit   # typecheck
+npm run build   # build de producción
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Despliegue en Vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Subir el repo a GitHub (o importar el directorio con Vercel CLI).
+2. En Vercel: **Add New → Project**, importar el repo.
+   Framework detectado: Next.js — no requiere configuración extra.
+3. En **Settings → Environment Variables**, agregar:
+   | Nombre         | Valor                        |
+   |----------------|------------------------------|
+   | `MOODLE_URL`   | `https://ele.chaco.gob.ar`   |
+   | `MOODLE_TOKEN` | el token de Web Services     |
+4. **Deploy**. Los cambios posteriores se despliegan solos por cada push a la
+   rama de producción.
+
+### Vercel CLI (alternativa)
+
+```sh
+npm i -g vercel
+vercel login
+vercel env add MOODLE_TOKEN   # respuesta en producción
+vercel env add MOODLE_URL
+vercel --prod
+```
+
+## Seguridad del token
+
+El token **jamás llega al navegador**:
+
+- Se lee solo dentro del Route Handler (`app/api/reset/route.ts`) y del módulo
+  `lib/moodle.ts`, que corren en el servidor.
+- `lib/moodle.ts` importa `server-only`: si alguien lo importara desde un
+  componente cliente, el build **falla** (garantía en tiempo de compilación).
+- No se usa el prefijo `NEXT_PUBLIC_` (ese estaría inlined en el JS del cliente
+  y sería visible en DevTools).
+- El navegador solo recibe el resultado de `/api/reset` con mensajes genéricos.
+
+Limitaciones a tener en cuenta:
+
+- El rate limiting es en memoria (`lib` de los route handlers de `app/api/reset`),
+  válido por instancia serverless. Para un volumen alto y protección distribuida,
+  migrarlo a Upstash Redis (`@upstash/ratelimit`).
+- Al ser público, el "factor de autorización" es el correo registrado: quien
+  conozca un DNI y su correo puede resetear esa contraseña.
+
+## Estructura
+
+```
+ele-web/
+├── app/
+│   ├── components/reset-password-form.tsx   → formulario (client component)
+│   ├── api/reset/route.ts                   → Route Handler (server)
+│   ├── layout.tsx
+│   └── page.tsx                             → landing page
+├── lib/moodle.ts                            → cliente Moodle (server-only)
+├── .env.example                             → plantilla de variables (commitear)
+└── .env.local                               → variables reales (NO commitear)
+```
